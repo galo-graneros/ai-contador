@@ -24,11 +24,23 @@ export default async function DashboardLayout({
         .single()
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+        <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950">
+            {/* Subtle background pattern */}
+            <div className="fixed inset-0 bg-[url('/grid.svg')] bg-center opacity-[0.02] pointer-events-none" />
+
+            {/* Navigation */}
             <DashboardNav />
-            <div className="lg:pl-64">
-                <DashboardHeader user={profile || { email: user.email, full_name: null }} />
-                <main className="p-6">
+
+            {/* Main Content */}
+            <div className="lg:pl-72">
+                <DashboardHeader
+                    user={{
+                        email: profile?.email || user.email,
+                        full_name: profile?.full_name || null,
+                        avatar_url: profile?.avatar_url || null
+                    }}
+                />
+                <main className="p-6 lg:p-8">
                     {children}
                 </main>
             </div>

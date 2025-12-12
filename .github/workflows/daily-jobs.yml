@@ -1,0 +1,161 @@
+name: Daily Jobs
+
+on:
+  schedule:
+    # Run daily at 6:00 AM UTC (3:00 AM Argentina time)
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  API_URL: ${{ secrets.API_URL }}
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+jobs:
+  regenerate-declarations:
+    name: Regenerate Declaration Drafts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Declaration Generator
+        run: |
+          # Get all active users
+          users=$(curl -s "${SUPABASE_URL}/rest/v1/users?select=id" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}")
+          
+          # Get current period
+          periodo=$(date +%Y-%m)
+          
+          echo "Regenerating declarations for period: ${periodo}"
+          
+          # Generate declarations for each user
+          echo "$users" | jq -r '.[].id' | while read user_id; do
+            echo "Processing user: ${user_id}"
+            
+            # Generate each declaration type
+            for tipo in iva_ventas iva_compras monotributo iibb; do
+              curl -X POST "${API_URL}/api/declarations/generate" \
+                -H "Content-Type: application/json" \
+                -H "x-service-key: ${SUPABASE_SERVICE_KEY}" \
+                -d "{\"user_id\": \"${user_id}\", \"periodo\": \"${periodo}\", \"tipo\": \"${tipo}\"}" \
+                || echo "Failed to generate ${tipo} for ${user_id}"
+            done
+          done
+
+  classify-pending:
+    name: Classify Pending Transactions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Batch Classification
+        run: |
+          # Get users with pending transactions
+          users=$(curl -s "${SUPABASE_URL}/rest/v1/transactions?status=eq.pending&select=user_id" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" | jq -r 'unique_by(.user_id) | .[].user_id')
+          
+          echo "Found users with pending transactions"
+          
+          # Classify for each user
+          echo "$users" | while read user_id; do
+            if [ -n "$user_id" ]; then
+              echo "Classifying transactions for user: ${user_id}"
+              
+              curl -X POST "${API_URL}/api/ai/classify-batch" \
+                -H "Content-Type: application/json" \
+                -H "x-service-key: ${SUPABASE_SERVICE_KEY}" \
+                -d "{\"user_id\": \"${user_id}\", \"limit\": 50}" \
+                || echo "Failed to classify for ${user_id}"
+            fi
+          done
+
+  send-notifications:
+    name: Send Pending Notifications
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Send Invoice Reminders
+        run: |
+          # Get users with pending invoices
+          count=$(curl -s "${SUPABASE_URL}/rest/v1/transactions?type=eq.income&status=eq.classified&invoice_id=is.null&select=user_id" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Prefer: count=exact" \
+            -I | grep -i 'content-range' | sed 's/.*\///')
+          
+          echo "Found ${count} pending invoices to notify"
+          
+          # Trigger notification job
+          curl -X POST "${API_URL}/api/notifications/send-pending-reminders" \
+            -H "x-service-key: ${SUPABASE_SERVICE_KEY}" \
+            || echo "Failed to send reminders"
+
+  verify-connections:
+    name: Verify AFIP Connections
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check AFIP Connections
+        run: |
+          # Get all AFIP connections
+          connections=$(curl -s "${SUPABASE_URL}/rest/v1/connections?provider=eq.afip&status=eq.active&select=id,user_id" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}")
+          
+          echo "Verifying AFIP connections"
+          
+          # Verify each connection
+          echo "$connections" | jq -r '.[] | "\(.id) \(.user_id)"' | while read conn_id user_id; do
+            if [ -n "$conn_id" ]; then
+              echo "Verifying connection: ${conn_id}"
+              
+              curl -X POST "${API_URL}/api/connections/afip/verify" \
+                -H "Content-Type: application/json" \
+                -H "x-service-key: ${SUPABASE_SERVICE_KEY}" \
+                -d "{\"connection_id\": \"${conn_id}\"}" \
+                || echo "Failed to verify ${conn_id}"
+            fi
+          done
+
+  log-completion:
+    name: Log Job Completion
+    runs-on: ubuntu-latest
+    needs: [regenerate-declarations, classify-pending, send-notifications, verify-connections]
+    if: always()
+    steps:
+      - name: Log to Database
+        run: |
+          curl -X POST "${SUPABASE_URL}/rest/v1/job_logs" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "job_name": "daily-jobs",
+              "status": "completed",
+              "metadata": {
+                "run_id": "${{ github.run_id }}",
+                "trigger": "${{ github.event_name }}"
+              }
+            }'
+          
+          echo "Daily jobs completed at $(date)"

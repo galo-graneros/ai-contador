@@ -1,0 +1,18 @@
+{
+    "name": "@ai-contador/database",
+    "version": "1.0.0",
+    "private": true,
+    "main": "./src/index.ts",
+    "types": "./src/index.ts",
+    "scripts": {
+        "generate": "supabase gen types typescript --project-id $SUPABASE_PROJECT_ID > src/types.ts",
+        "push": "echo 'Run migrations via Supabase dashboard or CLI'"
+    },
+    "dependencies": {
+        "@supabase/supabase-js": "^2.39.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.3.3",
+        "supabase": "^1.123.0"
+    }
+}
